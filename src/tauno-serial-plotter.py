@@ -14,7 +14,7 @@
     - https://stackoverflow.com/questions/40577104/how-to-plot-two-real-time-data-in-one-single-plot-in-pyqtgraph
     - https://www.youtube.com/watch?v=IEEhzQoKtQU&t=800s
     - https://github.com/pyqt/examples
-    
+
     - https://phrase.com/blog/posts/translate-python-gnu-gettext/
     - https://phrase.com/blog/posts/beginners-guide-to-locale-in-python/
 """
@@ -35,6 +35,7 @@ import platform
 
 VERSION = '1.18.8'
 TIMESCALESIZE = 450  # = self.plot_timescale and self.plot_data_size
+SAMPLERATE = 125
 
 stop_port_scan = False # To kill port scan thread when sys.exit
 
@@ -234,7 +235,7 @@ QDoubleSpinBox{{
     background-color: {colors['hall']};
     color: {colors['black']};
     border: 1px solid {colors['black']};
-    padding: 5px 25px 0px 25px; 
+    padding: 5px 25px 0px 25px;
     font: {FONTSIZE}px;
 }}
 
@@ -360,6 +361,11 @@ class Controls(QWidget):
         self.plot_timescale_min = 50
         self.plot_timescale_max = 1000
 
+        # Plot time scale == data visible area size
+        self.plot_samplesize = SAMPLERATE # default
+        self.plot_samplesize_min = 50
+        self.plot_samplesize_max = 200
+
         self.vertical_layout = QVBoxLayout(self)
 
         # Menu width:
@@ -427,6 +433,22 @@ class Controls(QWidget):
         self.menu_bottom.addWidget(self.time_scale_spin)
         self.time_scale_spin.setStyleSheet(QDoubleSpinBox_style)
 
+        # Select Time scale size
+        ## Time scale txt
+        self.sampling_rate_txt = QLabel(self)
+        self.menu_bottom.addWidget(self.sampling_rate_txt)
+        self.sampling_rate_txt.setText("Sampling rate (Hz):")
+        self.sampling_rate_txt.setStyleSheet(QLabel_style)
+        ## SpinBox
+        self.sampling_rate_spin = QtWidgets.QDoubleSpinBox()
+        self.sampling_rate_spin.setSingleStep(1)
+        self.sampling_rate_spin.setDecimals(0)
+        self.sampling_rate_spin.setMaximum(self.plot_samplesize_max)
+        self.sampling_rate_spin.setMinimum(self.plot_samplesize_min)
+        self.sampling_rate_spin.setValue(self.plot_samplesize)
+        self.menu_bottom.addWidget(self.sampling_rate_spin)
+        self.sampling_rate_spin.setStyleSheet(QDoubleSpinBox_style)
+
         # Button: Clear data
         self.clear_data = QtWidgets.QPushButton('Clear data', parent=self)
         self.menu_bottom.addWidget(self.clear_data)
@@ -442,9 +464,10 @@ class Controls(QWidget):
 
         self.vertical_layout.addLayout(self.menu_bottom)
 
-    def update_timescale(self, new_value):
+    def update_timescale(self, new_value_1, new_value_2):
         """ Assign new value. """
-        self.plot_timescale = new_value
+        self.plot_timescale = new_value_1
+        self.plot_samplesize = new_value_2
 
     def resizeEvent(self, event):
         """ If we resize main window. """
@@ -452,6 +475,27 @@ class Controls(QWidget):
 
 # END of class Controls ----------------------------------------
 
+class ReadLine:
+    def __init__(self, s):
+        self.buf = bytearray()
+        self.s = s
+
+    def readline(self):
+        i = self.buf.find(b"\n")
+        if i >= 0:
+            r = self.buf[:i+1]
+            self.buf = self.buf[i+1:]
+            return r
+        while True:
+            i = self.s.in_waiting
+            data = self.s.read(i)
+            i = data.find(b"\n")
+            if i >= 0:
+                r = self.buf + data[:i+1]
+                self.buf[0:] = data[i+1:]
+                return r
+            else:
+                self.buf.extend(data)
 
 class MainWindow(QWidget):
     """
@@ -505,6 +549,7 @@ class MainWindow(QWidget):
 
         self.init_timer()
         self.ser = serial.Serial()
+        self.readHandler = ReadLine(self.ser)
 
         # Controlls
         self.controls = Controls(parent=self)
@@ -521,6 +566,7 @@ class MainWindow(QWidget):
         self.controls.select_port.currentIndexChanged.connect(self.selected_port_changed)
         self.controls.select_baud.currentIndexChanged.connect(self.selected_baud_changed)
         self.controls.time_scale_spin.valueChanged.connect(self.time_scale_changed)
+        self.controls.sampling_rate_spin.valueChanged.connect(self.time_scale_changed)
         self.controls.connect.pressed.connect(self.connect_stop)
         self.controls.clear_data.pressed.connect(self.clear_data)
         self.controls.about.pressed.connect(self.about)
@@ -539,7 +585,7 @@ class MainWindow(QWidget):
 
     def init_timer(self):
         self.timer = QtCore.QTimer()
-        self.timer.setInterval(10)
+        self.timer.setInterval(1)
         self.timer.start()
 
     def init_ui(self):
@@ -631,31 +677,31 @@ class MainWindow(QWidget):
                         while len(self.plot.y_axis[i]) > len(self.plot.x_axis):
                             # Remove the first element on list
                             self.plot.y_axis[i] = self.plot.y_axis[i][1:]
-            
+
             except Exception as ex:
                 logging.debug(ex)
                 self.error_counter += 1
                 self.error_status()
 
-            except SystemExit:  
+            except SystemExit:
                 logging.debug(sys.exc_info())
 
 
     def time_scale_changed(self):
         logging.debug("Timescale changed!")
-        new_value = int(self.controls.time_scale_spin.value())
+        new_value_1 = int(self.controls.time_scale_spin.value())
         old_value = self.plot_data_size
-
-        self.controls.update_timescale(new_value)
+        new_value_2 = int(self.controls.sampling_rate_spin.value())
+        self.controls.update_timescale(new_value_1, new_value_2)
         #print("New Timescale value = {}".format(self.controls.plot_timescale))
 
-        self.update_data_size(new_value)
+        self.update_data_size(new_value_1)
         #print("New data size value = {}".format(self.plot_data_size))
 
-        if new_value < old_value:
+        if new_value_1 < old_value:
             if self.plot_exist:
                 real_size = len(self.plot.x_axis)
-                difference = real_size - new_value
+                difference = real_size - new_value_1
                 # shrink data size
                 if difference > 1:
                     del self.plot.x_axis[0:difference]
@@ -686,6 +732,8 @@ class MainWindow(QWidget):
 
     def connect(self):
         """ When we press button Connect. """
+        global stop_port_scan
+        stop_port_scan = True
         # Change button txt
         self.controls.connect.setText('Pause')
         # Disable button
@@ -698,7 +746,6 @@ class MainWindow(QWidget):
         if not self.plot_exist:
             logging.debug("connect: create plot")
             self.number_of_lines = self.how_many_lines()
-
             if self.number_of_lines is not None:
                 self.plot = Plot(self.number_of_lines)
                 self.horizontal_layout.addWidget(self.plot)
@@ -775,14 +822,16 @@ class MainWindow(QWidget):
             # Remove the first element on list
             self.plot.x_axis = self.plot.x_axis[1:]
         # Add a new value 1 higher than the last to end
-        self.plot.x_axis.append(self.plot.x_axis[-1] + 1)
+        self.plot.x_axis.append(self.plot.x_axis[-1] + 1/self.controls.plot_samplesize)
 
     def open_serial(self):
         try:
             logging.debug("0 Open serial: %s %s", self.selected_port, self.selected_baudrate)
             if self.ser.is_open:
                 self.ser.close()
-            self.ser = serial.Serial(self.selected_port, int(self.selected_baudrate), timeout=0.09)
+            self.ser = serial.Serial(self.selected_port, int(self.selected_baudrate), timeout=None)
+            self.ser.set_buffer_size(rx_size = 128000, tx_size = 128000)
+            self.readHandler = ReadLine(self.ser)
             self.ser.reset_input_buffer()## 09.02.2022
             logging.debug("1 Open serial: %s %s", self.ser.name, self.ser.baudrate)
         except IOError:
@@ -808,7 +857,7 @@ class MainWindow(QWidget):
 
         if self.ser.is_open:
             try:
-                incoming_data = self.ser.readline().decode('utf8')
+                incoming_data = self.readHandler.readline().decode('utf8')
 
                 if incoming_data:
                     logging.info("read_serial_dat: Incoming data: %s", incoming_data)
@@ -826,8 +875,8 @@ class MainWindow(QWidget):
 
                     for i in range(self.number_of_lines):
                         logging.debug("for loop %s", i)
-                        logging.debug("plot.x_axis %s", self.plot.x_axis)
-                        logging.debug("plot.y_axis[i] %s", self.plot.y_axis[i])
+                        #logging.debug("plot.x_axis %s", self.plot.x_axis)
+                        #logging.debug("plot.y_axis[i] %s", self.plot.y_axis[i])
                         if len(self.plot.x_axis) > len(self.plot.y_axis[i]):
                             # At beginning append 0.0
                             self.plot.y_axis[i].insert(0, 0.0)
@@ -838,8 +887,8 @@ class MainWindow(QWidget):
                 self.error_counter += 1
                 self.error_status()
                 self.equal_x_and_y()
-                
-            except SystemExit:  
+
+            except SystemExit:
                 logging.debug(sys.exc_info())
 
 
@@ -854,22 +903,22 @@ class MainWindow(QWidget):
             try:
                 # This may be half of data
                 # [:-2] removes the new-line chars.
-                broken_data = self.ser.readline()#[:-2].decode('ascii')
+                broken_data = self.readHandler.readline()#[:-2].decode('ascii')
                 logging.debug("try broken_data %s", broken_data)
                 # Full data is between two \n chars
-                incoming_data = self.ser.readline().decode('utf8')
-                
+                incoming_data = self.readHandler.readline().decode('utf8')
+
                 logging.debug("try incoming_data %s", incoming_data)
-                
+
                 i = 0
                 while not incoming_data:
-                    incoming_data = self.ser.readline().decode('utf8') #readline()[:-1]
+                    incoming_data = self.readHandler.readline().decode('utf8') #readline()[:-1]
                     if i > self.max_tryes:
                         break
                     logging.debug("i = %s", i)
                     logging.debug("while not incoming_data %s", incoming_data)
                     i = i+1
-                    
+
 
                 if incoming_data:
                     logging.debug("if Incoming data %s", incoming_data)
@@ -881,8 +930,8 @@ class MainWindow(QWidget):
                 logging.debug(ex)
                 logging.debug("Error how_many_lines")
                 self.ser.close()
-                
-            except SystemExit:  
+
+            except SystemExit:
                 logging.debug(sys.exc_info())
 
 
